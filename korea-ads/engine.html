@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="kk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Korea Grant Ads — 9:16 engine</title>
+<style>
+@font-face{font-family:RF;src:url(fonts/RobotoFlex.ttf);font-weight:100 1000;font-stretch:25% 151%;}
+@font-face{font-family:MS;src:url(fonts/Montserrat.ttf);font-weight:100 900;}
+@font-face{font-family:BHS;src:url(fonts/BlackHanSans.ttf);}
+html,body{margin:0;background:#05060a;height:100%}
+canvas{display:block;height:100vh;max-width:100vw;margin:0 auto;object-fit:contain}
+</style>
+</head>
+<body>
+<canvas id="out" width="1080" height="1920"></canvas>
+<script>
+/* ------------------------------------------------------------------
+   Kinetic street-poster engine, 1080x1920 (9:16).
+   Rules (adapted from the @techhalla Opus 5.5 prompt):
+   - render is a pure function of time: seek(t). No timers, no state.
+   - closed-form springs, per-glyph stagger, print misregistration
+     (taegeuk red/blue) on impact frames, punch-in camera on beats,
+     120 BPM beat grid, sub-frame motion blur at export.
+   URL: engine.html?c=grant100|topik|parents|masters|steps|myth[&poster=1]
+------------------------------------------------------------------- */
+const W=1080,H=1920,BPM=120,BEAT=60/BPM;
+const C={bg:'#0B0D14',card:'#151927',ink:'#F5F3EE',y:'#FFD83D',r:'#E8344E',b:'#2F5BEA',dim:'rgba(245,243,238,.55)',faint:'rgba(245,243,238,.09)'};
+const out=document.getElementById('out'),octx=out.getContext('2d');
+const scene=document.createElement('canvas');scene.width=W;scene.height=H;
+const ctx=scene.getContext('2d');
+const clamp=(x,a=0,b=1)=>Math.max(a,Math.min(b,x));
+const eo=x=>1-Math.pow(1-clamp(x),3);
+const eoX=x=>x>=1?1:1-Math.pow(2,-10*clamp(x));
+function spring(t,w=17,z=.68){if(t<=0)return 0;const wd=w*Math.sqrt(1-z*z);return 1-Math.exp(-z*w*t)*(Math.cos(wd*t)+z*w/wd*Math.sin(wd*t));}
+function rng(seed){let s=seed>>>0;return()=>{s=(s*1664525+1013904223)>>>0;return s/4294967296;};}
+const fmt=n=>Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g,' ');
+
+/* ---------- type system ---------- */
+const FONT={
+  D:s=>`1000 ultra-expanded ${s}px RF, BHS`,   // display scream, wide black
+  N:s=>`900 condensed ${s}px RF, BHS`,         // narrow black
+  X:s=>`1000 extra-condensed ${s}px RF, BHS`,  // tall numerals
+  B:s=>`700 ${s}px MS, BHS`,                   // body bold
+  R:s=>`500 ${s}px MS, BHS`,                   // body regular
+  L:s=>`700 expanded ${s}px RF, BHS`,          // labels / crumbs
+  K:s=>`${s}px BHS`                            // hangul
+};
+const LS={D:-.02,N:0,X:-.01,B:0,R:0,L:.16,K:0};
+function setFont(k,s){ctx.font=FONT[k](s);ctx.letterSpacing=(LS[k]*s).toFixed(2)+'px';}
+
+/* ---------- per-frame globals ---------- */
+let T=0,GA=1,BLUR=0,CUR=null;
+
+/* animated text line, per-glyph springs */
+function txt(str,x,y,size,kind,color,t0,o={}){
+  setFont(kind,size);let w=ctx.measureText(str).width;const maxW=o.maxW||920;
+  if(w>maxW){size=size*maxW/w;setFont(kind,size);w=ctx.measureText(str).width;}
+  const al=o.align||'center';const x0=al==='center'?x-w/2:al==='right'?x-w:x;
+  if(o.box){const s=spring(T-t0+.04,16,.8);if(s>0){const p=o.boxPad||22;
+    ctx.globalAlpha=GA*clamp((T-t0+.04)*8);ctx.fillStyle=o.box;ctx.filter=BLUR>.3?`blur(${BLUR}px)`:'none';
+    rr(x0-p,y-size*.80-p*.55,(w+2*p)*clamp(s,0,1.04),size*1.03+p*1.1,o.boxR??10);ctx.fill();ctx.filter='none';}}
+  const ch=[...str],n=ch.length,st=o.st??Math.min(.045,.42/n);
+  ctx.textBaseline='alphabetic';ctx.textAlign='left';let acc='';
+  const mis=o.mis??(kind==='D'||kind==='N'||kind==='X');
+  for(let i=0;i<n;i++){
+    const px=x0+(i?ctx.measureText(acc).width:0);acc+=ch[i];
+    if(ch[i]===' ')continue;
+    const lt=T-t0-i*st;if(lt<=0)continue;
+    const s=spring(lt,o.k||17,.66);
+    const a=clamp(lt*7)*GA*(o.a??1);if(a<=.004)continue;
+    const bl=Math.max((1-clamp(lt*5))*9,BLUR);
+    ctx.filter=bl>.3?`blur(${bl.toFixed(1)}px)`:'none';
+    const Y=y+(1-s)*size*(o.dy??.5);
+    if(mis&&lt>.05&&lt<.30){ctx.globalAlpha=a*.75;ctx.fillStyle=C.r;ctx.fillText(ch[i],px-4,Y);ctx.fillStyle=C.b;ctx.fillText(ch[i],px+4,Y+1);}
+    ctx.globalAlpha=a;ctx.fillStyle=color;ctx.fillText(ch[i],px,Y);
+  }
+  ctx.filter='none';ctx.globalAlpha=1;ctx.letterSpacing='0px';
+  return{w,size,x0};
+}
+function rr(x,y,w,h,r){r=Math.min(r,h/2,Math.abs(w)/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+
+/* mono crumb: typed label in a hairline pill */
+function crumb(str,x,y,t0,o={}){
+  const lt=T-t0;if(lt<=0)return;const size=o.size||26;setFont('L',size);
+  const full=ctx.measureText(str).width;const n=[...str].length;const shown=[...str].slice(0,Math.ceil(n*clamp(lt/.35))).join('');
+  const al=o.align||'center';const pw=full+44,ph=size+30;const x0=al==='center'?x-pw/2:al==='right'?x-pw:x;
+  ctx.globalAlpha=GA*clamp(lt*6);ctx.filter=BLUR>.3?`blur(${BLUR}px)`:'none';
+  rr(x0,y-ph/2,pw*eo(lt/.25),ph,ph/2);ctx.strokeStyle=o.color||C.y;ctx.lineWidth=2.5;ctx.stroke();
+  if(o.fill){ctx.fillStyle=o.fill;ctx.fill();}
+  ctx.fillStyle=o.tc||o.color||C.y;ctx.textBaseline='middle';ctx.fillText(shown,x0+22,y+2);
+  if(lt<.4&&Math.floor(lt*12)%2===0){ctx.fillRect(x0+22+ctx.measureText(shown).width+3,y-size*.38,size*.5,size*.76);}
+  ctx.textBaseline='alphabetic';ctx.filter='none';ctx.globalAlpha=1;ctx.letterSpacing='0px';
+}
+function check(x,y,s,t0){const lt=T-t0;if(lt<=0)return;const p=eo(lt/.3);ctx.save();ctx.globalAlpha=GA;
+  ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.fillStyle=C.y;ctx.fill();
+  ctx.strokeStyle=C.bg;ctx.lineWidth=s*.24;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();
+  const pts=[[x-s*.45,y+s*.02],[x-s*.12,y+s*.34],[x+s*.48,y-s*.32]];ctx.moveTo(...pts[0]);
+  if(p<.4){const q=p/.4;ctx.lineTo(pts[0][0]+(pts[1][0]-pts[0][0])*q,pts[0][1]+(pts[1][1]-pts[0][1])*q);}
+  else{ctx.lineTo(...pts[1]);const q=(p-.4)/.6;ctx.lineTo(pts[1][0]+(pts[2][0]-pts[1][0])*q,pts[1][1]+(pts[2][1]-pts[1][1])*q);}
+  ctx.stroke();ctx.restore();}
+function arrow(x,y,s,color){ctx.save();ctx.strokeStyle=color;ctx.lineWidth=s*.16;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.moveTo(x-s*.5,y);ctx.lineTo(x+s*.5,y);ctx.moveTo(x+s*.12,y-s*.38);ctx.lineTo(x+s*.5,y);ctx.lineTo(x+s*.12,y+s*.38);ctx.stroke();ctx.restore();}
+function panel(x,y,w,h,t0,o={}){const lt=T-t0;if(lt<=0)return 0;const s=spring(lt,15,.72);const a=clamp(lt*6)*GA;
+  const off=(1-s)*(o.from==='right'?300:-300);ctx.save();ctx.globalAlpha=a;ctx.filter=BLUR>.3?`blur(${BLUR}px)`:'none';
+  rr(x+off,y,w,h,24);ctx.fillStyle=o.fill||C.card;ctx.fill();ctx.strokeStyle='rgba(255,255,255,.09)';ctx.lineWidth=2;ctx.stroke();
+  if(o.edge!==false){rr(x+off,y,12,h,6);ctx.fillStyle=o.edge||C.y;ctx.fill();}
+  ctx.restore();return off;}
+function hline(x,y,w,t0,color,lw=3){const lt=T-t0;if(lt<=0)return;ctx.globalAlpha=GA;ctx.fillStyle=color||C.faint;ctx.fillRect(x,y,w*eo(lt/.45),lw);ctx.globalAlpha=1;}
+function count(target,t0,dur=.9){return target*eoX((T-t0)/dur);}
+function note(str,t0,y=1478){txt(str,540,y,24,'R','rgba(245,243,238,.42)',t0,{st:.004,mis:false,maxW:930});}
+
+/* ---------- reusable blocks (used by shots and posters) ---------- */
+function uniCards(list,y0,t0,step=.8,h=190,gap=26){
+  list.forEach((u,i)=>{const ti=t0+i*step;const y=y0+i*(h+gap);const off=panel(80,y,920,h,ti,{from:i%2?'right':'left',edge:u.edge});
+    if(T-ti<=0)return;ctx.save();ctx.translate(off,0);
+    txt(u.name,124,y+74,46,'N',C.ink,ti+.08,{align:'left',maxW:520,mis:false});
+    txt(u.sub,124,y+136,30,'R',C.dim,ti+.16,{align:'left',maxW:500,mis:false,st:.006});
+    txt(u.val,966,y+h/2+38,u.vs||104,'X',C.y,ti+.22,{align:'right',maxW:380});
+    ctx.restore();});
+}
+function ladder(items,y0,t0,step=1,base=1330){
+  const n=items.length,gw=210,gx=(1080-n*gw)/2;const maxH=base-y0-150;
+  items.forEach((it,i)=>{const ti=t0+i*step;const lt=T-ti;if(lt<=0)return;
+    const s=spring(lt,13,.7);const h=maxH*it.v/100*s;const x=gx+i*gw+18,w=gw-36;
+    ctx.globalAlpha=GA*clamp(lt*6);ctx.filter=BLUR>.3?`blur(${BLUR}px)`:'none';
+    ctx.fillStyle=it.v>=100?C.y:'rgba(255,216,61,'+(.35+.15*i)+')';rr(x,base-h,w,h,16);ctx.fill();ctx.filter='none';ctx.globalAlpha=1;
+    txt(Math.round(it.v*eoX(lt/.9))+'%',x+w/2,base-h-26,it.v>=100?92:72,'X',it.v>=100?C.y:C.ink,ti+.1,{maxW:w+30});
+    txt(it.label,x+w/2,base+64,38,'N',C.ink,ti,{maxW:w+20,mis:false});
+    txt(it.sub||'',x+w/2,base+108,24,'L',C.dim,ti+.1,{maxW:w+20,mis:false});
+  });
+  hline(60,base,960,t0-.1,'rgba(245,243,238,.35)',3);
+}
+function priceRows(rows,y0,t0,step=1.5,gap=230){
+  rows.forEach((r,i)=>{const ti=t0+i*step;const y=y0+i*gap;if(T-ti<=0)return;
+    txt(r.label,90,y,34,'B',C.dim,ti,{align:'left',mis:false,st:.008,maxW:900});
+    const v=r.num!=null?fmt(count(r.num,ti+.1,1.0))+r.unit:r.text;
+    txt(v,90,y+112,r.vs||104,'N',r.color||C.y,ti+.1,{align:'left',maxW:900,st:.012});
+    if(r.tag)crumb(r.tag,990,y-12,ti+.5,{align:'right',size:22,color:C.ink});
+    hline(90,y+150,900,ti+.2);
+  });
+}
+function steps3(list,y0,t0,step=.6,gap=250){
+  list.forEach((s,i)=>{const ti=t0+i*step;const y=y0+i*gap;if(T-ti<=0)return;
+    txt(s.n,90,y+20,150,'X',C.y,ti,{align:'left'});
+    txt(s.h,280,y-28,50,'N',C.ink,ti+.1,{align:'left',maxW:700});
+    txt(s.s,280,y+30,29,'R',C.dim,ti+.2,{align:'left',maxW:700,mis:false,st:.004});
+    if(s.s2)txt(s.s2,280,y+70,29,'R',C.dim,ti+.25,{align:'left',maxW:700,mis:false,st:.004});
+  });
+}
+function button(label,y,t0,o={}){const lt=T-t0;if(lt<=0)return;const s=spring(lt,14,.6);
+  const bp=Math.exp(-((T%BEAT))*7)*(T>t0+.5?1:0);const sc=clamp(s,0,1.2)*(1+.035*bp);
+  const w=o.w||820,h=o.h||150;ctx.save();ctx.translate(540,y);ctx.scale(sc,sc);ctx.globalAlpha=GA*clamp(lt*6);
+  ctx.shadowColor='rgba(255,216,61,.45)';ctx.shadowBlur=40*bp+10;rr(-w/2,-h/2,w,h,h/2);ctx.fillStyle=C.y;ctx.fill();ctx.shadowBlur=0;
+  setFont('D',o.size||50);const tw=ctx.measureText(label).width;ctx.fillStyle=C.bg;ctx.textBaseline='middle';
+  ctx.fillText(label,-tw/2-30,4);arrow(tw/2+20,0,52,C.bg);ctx.restore();ctx.letterSpacing='0px';ctx.textBaseline='alphabetic';}
+function cta(t0,o){
+  crumb(o.kicker||'ОРЫН САНЫ ШЕКТЕУЛІ',540,560,t0,{});
+  txt('ТЕГІН',540,780,200,'D',C.y,t0+.05);
+  txt('КОНСУЛЬТАЦИЯ',540,920,140,'D',C.ink,t0+.3);
+  button(o.btn||'ЖАЗЫЛУ',1090,t0+.65);
+  txt(o.sub,540,1290,40,'B',C.ink,t0+.9,{mis:false,st:.01});
+  txt(o.sub2||'',540,1350,32,'R',C.dim,t0+1.0,{mis:false,st:.006});
+}
+/* strike that becomes an underline */
+function strike(x0,x1,y,t0,dur=.3){const lt=T-t0;if(lt<=0)return;ctx.globalAlpha=GA;ctx.fillStyle=C.r;ctx.fillRect(x0,y-9,(x1-x0)*eo(lt/dur),18);ctx.globalAlpha=1;}
+
+/* ---------- background ---------- */
+const grain=[0,1,2,3].map(k=>{const c=document.createElement('canvas');c.width=540;c.height=960;const g=c.getContext('2d');const id=g.createImageData(540,960);const R=rng(7+k*99);
+  for(let i=0;i<id.data.length;i+=4){const v=R()*255;id.data[i]=id.data[i+1]=id.data[i+2]=v;id.data[i+3]=255;}g.putImageData(id,0,0);return c;});
+function background(cr,frameIdx){
+  ctx.fillStyle=C.bg;ctx.fillRect(0,0,W,H);
+  // hangul monument word, slow deterministic drift
+  ctx.save();ctx.font='560px BHS';ctx.textBaseline='middle';ctx.lineWidth=3;ctx.strokeStyle='rgba(245,243,238,.055)';
+  const dx=-T*26;ctx.strokeText(cr.hangul,60+dx,860);ctx.strokeStyle='rgba(255,216,61,.05)';ctx.strokeText(cr.hangul,-380-dx*.6,1420);ctx.restore();
+  // column grid
+  ctx.fillStyle='rgba(245,243,238,.035)';for(let x=90;x<W;x+=150)ctx.fillRect(x,0,1,H);
+  // vignette
+  const g=ctx.createRadialGradient(540,900,300,540,900,1250);g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,0,.55)');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+}
+function overlayGrain(frameIdx){ctx.save();ctx.globalAlpha=.05;ctx.globalCompositeOperation='overlay';ctx.drawImage(grain[frameIdx%4],0,0,W,H);ctx.restore();}
+function taegeuk(x,y,r){ctx.save();ctx.beginPath();ctx.arc(x,y,r,Math.PI,0);ctx.fillStyle=C.r;ctx.fill();ctx.beginPath();ctx.arc(x,y,r,0,Math.PI);ctx.fillStyle=C.b;ctx.fill();
+  ctx.beginPath();ctx.arc(x-r/2,y,r/2,0,Math.PI);ctx.fillStyle=C.r;ctx.fill();ctx.beginPath();ctx.arc(x+r/2,y,r/2,Math.PI,0);ctx.fillStyle=C.b;ctx.fill();ctx.restore();}
+function header(cr){
+  setFont('L',22);const s='ОҢТҮСТІК КОРЕЯ · ОҚУ ГРАНТТАРЫ';const w=ctx.measureText(s).width;
+  taegeuk(540-w/2-26,140,15);ctx.fillStyle=C.ink;ctx.globalAlpha=.85;ctx.textBaseline='middle';ctx.fillText(s,540-w/2,142);ctx.globalAlpha=1;ctx.textBaseline='alphabetic';ctx.letterSpacing='0px';
+  // beat ticks: one per beat, the "something lands every beat" grid
+  const n=Math.round(cr.dur/BEAT),tw=700/n;for(let i=0;i<n;i++){const bt=i*BEAT;const on=T>=bt;const p=on?Math.exp(-(T-bt)*6):0;
+    ctx.fillStyle=on?C.y:'rgba(245,243,238,.18)';const h=6+16*p;ctx.fillRect(190+i*tw+2,196-h/2,tw-4,h);}
+}
+
+/* ---------- shot wrapper: exits are smash-pans with blur ---------- */
+function shot(t0,t1,exit,fn){if(T<t0||T>=t1)return;const p=exit==='none'?0:clamp((T-(t1-.24))/.24);const e=p*p;
+  ctx.save();const dir=exit==='right'?1:-1;if(exit==='up')ctx.translate(0,-e*420);else ctx.translate(dir*e*760,0);
+  GA=1-e*.85;BLUR=e*16;fn(T-t0);ctx.restore();GA=1;BLUR=0;}
+function camera(cr){let s=1;for(const ti of cr.hits){if(T>=ti)s+=.045*Math.exp(-(T-ti)*5.5);}return s;}
+
+/* ================= CREATIVES ================= */
+const CR={};
+const NOTE='* Грант мөлшері университетке, TOPIK/IELTS балына және GPA-ға байланысты.';
+
+/* 1. 100% grant — audience: 11-сынып оқушылары / талапкерлер */
+CR.grant100={dur:15,hangul:'장학금',hits:[.5,.75,3,4.6,7,12.05],cta:12,
+ shots(){
+  shot(0,2.2,'left',()=>{crumb('11-СЫНЫП ОҚУШЫЛАРЫНА',540,520,.0);
+    txt('КОРЕЯДА',540,760,150,'D',C.ink,.08);txt('ТЕГІН',540,980,230,'D',C.y,.5);txt('ОҚУ',540,1200,230,'D',C.y,.75);
+    crumb('ГРАНТ 50–100%',540,1330,1.3,{color:C.ink});});
+  shot(2.2,4.5,'up',()=>{txt('ШЫН БА?',540,820,190,'D',C.ink,2.25);
+    txt('ИӘ.',540,1060,240,'D',C.y,3.0);txt('100%-ҒА ДЕЙІН ГРАНТ',540,1200,62,'D',C.bg,3.3,{box:C.y,mis:false});});
+  shot(4.5,9,'left',()=>{crumb('УНИВЕРСИТЕТТІҢ ІШКІ ГРАНТЫ',540,350,4.5);
+    uniCards([{name:'KOREA UNIVERSITY',sub:'Global Leader Scholarship',val:'50–100%'},
+      {name:'KYUNG HEE',sub:'Admission Scholarship',val:'50–100%'},
+      {name:'CHUNG-ANG (CAU)',sub:'1st Semester Academic',val:'50–100%'},
+      {name:'YONSEI',sub:'Underwood / GSIS Grant',val:'33–100%'}],440,4.6,.6,200,28);
+    note(NOTE,6.8);});
+  shot(9,12,'left',()=>{txt('ШАРТЫ ҚАНДАЙ?',540,520,96,'D',C.ink,9.02);
+    [['TOPIK 5–6 немесе IELTS','тіл сертификаты'],['Жоғары GPA','аттестат / диплом балы'],['Мықты портфолио','жетістіктер, олимпиада']].forEach((r,i)=>{const ti=9.5+i*.5,y=720+i*210;
+      check(150,y,44,ti);txt(r[0],230,y+6,54,'N',C.ink,ti+.05,{align:'left',maxW:740,mis:false});txt(r[1],230,y+62,30,'R',C.dim,ti+.12,{align:'left',mis:false,st:.006});});});
+  shot(12,15.01,'none',()=>cta(12,{kicker:'ҚҰЖАТТАРДЫ БІЗ ДАЙЫНДАЙМЫЗ',sub:'Директке «ГРАНТ» деп жаз',sub2:'Шансыңды 15 минутта бағалаймыз'}));
+ },
+ poster(){crumb('11-СЫНЫП ОҚУШЫЛАРЫНА',540,330,0);txt('КОРЕЯДА',540,500,130,'D',C.ink,0);
+  txt('100%',540,800,330,'X',C.y,0);txt('ГРАНТҚА ДЕЙІН',540,920,92,'D',C.ink,0);
+  [['KOREA UNIVERSITY','50–100%'],['KYUNG HEE','50–100%'],['CHUNG-ANG','50–100%'],['YONSEI','33–100%']].forEach((r,i)=>{const y=1040+i*84;
+    txt(r[0],110,y,40,'N',C.ink,0,{align:'left',mis:false});txt(r[1],970,y,46,'N',C.y,0,{align:'right',mis:false});hline(110,y+24,860,0);});
+  button('ТЕГІН КОНСУЛЬТАЦИЯ',1450,0,{size:40,w:860,h:130});txt('Директке «ГРАНТ» деп жаз',540,1590,36,'B',C.ink,0,{mis:false});note(NOTE,0,1650);}
+};
+
+/* 2. TOPIK = discount — audience: корей тілін оқып жүргендер, K-culture fans */
+CR.topik={dur:15,hangul:'한국어',hits:[.6,3,4.7,5.7,6.7,7.7,12.55],cta:12.5,
+ shots(){
+  shot(0,2.5,'left',()=>{crumb('K-POP · ДОРАМА · TOPIK',540,560,0);txt('КОРЕЙ ТІЛІН',540,820,128,'D',C.ink,.1);txt('ОҚИСЫҢ БА?',540,990,128,'D',C.y,.6);
+    crumb('ОНДА БҰЛ — АҚША',540,1160,1.5,{color:C.ink});});
+  shot(2.5,4.5,'up',()=>{txt('ӘР TOPIK',540,820,150,'D',C.ink,2.55);txt('ДЕҢГЕЙІ',540,990,150,'D',C.ink,2.8);txt('= ЖЕҢІЛДІК',540,1170,110,'D',C.bg,3.2,{box:C.y,mis:false});});
+  shot(4.5,11,'left',()=>{crumb('ОҚУ АҚЫСЫНАН ЖЕҢІЛДІК',540,350,4.5);
+    ladder([{label:'TOPIK 3',v:30,sub:'KOOKMIN'},{label:'TOPIK 4',v:40,sub:'KOOKMIN'},{label:'TOPIK 5',v:50,sub:'KYUNG HEE · CAU'},{label:'TOPIK 6',v:100,sub:'1-СЕМЕСТР'}],430,4.7,1,1290);
+    note('* TOPIK 6 → 100%: Kyung Hee / Chung-Ang, 1-семестр. Шарттар өзгеруі мүмкін.',8.6);});
+  shot(11,12.5,'left',()=>{txt('ДЕҢГЕЙІҢ —',540,860,120,'D',C.ink,11.02);txt('ЖЕҢІЛДІГІҢ',540,1040,120,'D',C.y,11.35);});
+  shot(12.5,15.01,'none',()=>cta(12.5,{kicker:'TOPIK-КЕ ДАЙЫНДЫҚ + ТҮСУ',sub:'Директке «TOPIK» деп жаз',sub2:'Деңгейіңе сай универ таңдаймыз'}));
+ },
+ poster(){crumb('K-POP · ДОРАМА · TOPIK',540,330,0);txt('TOPIK',540,520,190,'D',C.y,0);txt('ДЕҢГЕЙІҢ =',540,650,96,'D',C.ink,0);txt('ЖЕҢІЛДІГІҢ',540,770,96,'D',C.ink,0);
+  T=99;ladder([{label:'TOPIK 3',v:30,sub:'KOOKMIN'},{label:'TOPIK 4',v:40,sub:'KOOKMIN'},{label:'TOPIK 5',v:50,sub:'KYUNG HEE · CAU'},{label:'TOPIK 6',v:100,sub:'1-СЕМЕСТР'}],830,0,0,1260);
+  button('ТЕГІН КОНСУЛЬТАЦИЯ',1500,0,{size:40,w:860,h:130});note('* TOPIK 6 → 100%: Kyung Hee / Chung-Ang, 1-семестр. Шарттар өзгеруі мүмкін.',0,1620);}
+};
+
+/* 3. Real costs — audience: ата-аналар 35–55 */
+CR.parents={dur:15,hangul:'유학',hits:[1.2,2.8,4.3,5.8,7.3,8.8,12.55],cta:12.5,
+ shots(){
+  shot(0,2.5,'left',()=>{crumb('АТА-АНАЛАРҒА',540,560,0);txt('БАЛАМ КОРЕЯДА',540,800,104,'D',C.ink,.1);txt('ОҚЫСА,',540,950,104,'D',C.ink,.5);
+    txt('ҚАНША ТҰРАДЫ?',540,1110,96,'D',C.bg,1.1,{box:C.y,mis:false});});
+  shot(2.5,10.5,'left',()=>{crumb('СЕУЛ · НАҚТЫ БАҒАЛАР',540,350,2.5);
+    priceRows([{label:'Тіл курсы · 1 семестр, 10 апта',num:1400000,unit:' ₩-дан'},
+      {label:'Гошивон · айына, кепілсіз',num:350000,unit:' ₩-дан',tag:'КОММУНАЛДЫ ІШІНДЕ'},
+      {label:'Жатақхана · 1 семестр (3 ай)',num:1200000,unit:' ₩-дан'},
+      {label:'Тіркеу жарнасы · бір реттік',num:50000,unit:' ₩-дан'}],500,2.8,1.5,225);
+    txt('+ ГРАНТ 30–100%',540,1405,84,'D',C.bg,8.8,{box:C.y,mis:false,maxW:900});txt('ШЫҒЫНДЫ АЗАЙТАДЫ',540,1490,34,'L',C.ink,9.2,{mis:false});});
+  shot(10.5,12.5,'left',()=>{txt('БАЛАҢЫЗҒА',540,820,110,'D',C.ink,10.52);txt('ЖЕКЕ ҚАРЖЫ',540,980,110,'D',C.y,10.8);txt('ЖОСПАРЫ',540,1140,110,'D',C.y,11.0);});
+  shot(12.5,15.01,'none',()=>cta(12.5,{kicker:'ЖЕКЕ ЕСЕП-ҚИСАП',sub:'Директке «ЕСЕП» деп жазыңыз',sub2:'Бюджетке сай универ мен тұрғын үй'}));
+ },
+ poster(){crumb('АТА-АНАЛАРҒА',540,330,0);txt('КОРЕЯДА ОҚУ',540,500,104,'D',C.ink,0);txt('ҚАНША ТҰРАДЫ?',540,640,104,'D',C.y,0);
+  [['Тіл курсы · 10 апта','1 400 000 ₩-дан'],['Гошивон · айына','350 000 ₩-дан'],['Жатақхана · семестр','1 200 000 ₩-дан'],['Тіркеу жарнасы','50 000 ₩-дан']].forEach((r,i)=>{const y=800+i*130;
+    txt(r[0],100,y,32,'B',C.dim,0,{align:'left',mis:false});txt(r[1],100,y+66,64,'N',C.ink,0,{align:'left',mis:false});hline(100,y+92,880,0);});
+  txt('+ ГРАНТ 30–100% ШЫҒЫНДЫ АЗАЙТАДЫ',540,1385,46,'D',C.bg,0,{box:C.y,mis:false,maxW:880});
+  button('ТЕГІН КОНСУЛЬТАЦИЯ',1545,0,{size:40,w:860,h:130});note('* Сеул бойынша орташа бағалар. Нақты сома универге байланысты.',0,1660);}
+};
+
+/* 4. Master's — audience: бакалавр түлектері 21–30 */
+CR.masters={dur:15,hangul:'대학원',hits:[.6,1.2,2.6,3.1,4.7,5.6,6.5,12.55],cta:12.5,
+ shots(){
+  shot(0,2.5,'left',()=>{crumb('БАКАЛАВР ТҮЛЕГІНЕ',540,560,0);txt('ДИПЛОМ БАР.',540,850,128,'D',C.ink,.1);txt('АЛ ЕНДІ?',540,1040,160,'D',C.y,1.0);});
+  shot(2.5,4.6,'up',()=>{txt('МАГИСТРАТУРА',540,860,130,'D',C.ink,2.55);txt('СЕУЛДЕ',540,1080,220,'D',C.y,3.1);});
+  shot(4.6,10,'left',()=>{crumb('MASTER\'S · ІШКІ ГРАНТТАР',540,350,4.6);
+    uniCards([{name:'YONSEI',sub:'Underwood / GSIS Grant',val:'33–100%'},
+      {name:'KOREA UNIVERSITY',sub:'Academic Excellence',val:'65–100%'},
+      {name:'KOREA UNIVERSITY',sub:'TOPIK 5–6 бонусы',val:'+500K ₩',vs:84}],460,4.7,.9,230,34);
+    note(NOTE,7.6);});
+  shot(10,12.5,'left',()=>{txt('НЕ КЕРЕК?',540,520,110,'D',C.ink,10.02);
+    [['IELTS 6.5+ немесе TOPIK 4–6','ерте жинасаң — шанс жоғары'],['Жоғары GPA','бакалавр дипломының балы'],['Мықты портфолио','мотивация хат, тәжірибе']].forEach((r,i)=>{const ti=10.4+i*.45,y=720+i*210;
+      check(150,y,44,ti);txt(r[0],230,y+6,52,'N',C.ink,ti+.05,{align:'left',maxW:740,mis:false});txt(r[1],230,y+62,30,'R',C.dim,ti+.12,{align:'left',mis:false,st:.006});});});
+  shot(12.5,15.01,'none',()=>cta(12.5,{kicker:'MASTER\'S 2027',sub:'Директке «МАГИСТР» деп жаз',sub2:'Портфолио мен мотивация хатқа көмектесеміз'}));
+ },
+ poster(){crumb('БАКАЛАВР ТҮЛЕГІНЕ',540,330,0);txt('МАГИСТРАТУРА',540,500,120,'D',C.ink,0);txt('СЕУЛДЕ',540,700,210,'D',C.y,0);
+  T=99;uniCards([{name:'YONSEI',sub:'Underwood / GSIS Grant',val:'33–100%'},{name:'KOREA UNIVERSITY',sub:'Academic Excellence',val:'65–100%'}],800,0,0,200,30);
+  [['IELTS 6.5+ / TOPIK 4–6'],['Жоғары GPA + портфолио']].forEach((r,i)=>{const y=1300+i*80;check(130,y-16,30,0);txt(r[0],185,y,44,'N',C.ink,0,{align:'left',mis:false});});
+  button('ТЕГІН КОНСУЛЬТАЦИЯ',1550,0,{size:40,w:860,h:130});note(NOTE,0,1665);}
+};
+
+/* 5. 3-step algorithm — warm audience / retargeting */
+CR.steps={dur:15,hangul:'합격',hits:[.5,1,2.3,5.1,7.9,11,12.55],cta:12.5,
+ shots(){
+  shot(0,2.2,'up',()=>{crumb('САҚТАП ҚОЙ',540,560,0,{color:C.ink});txt('ГРАНТ АЛУДЫҢ',540,800,112,'D',C.ink,.08);txt('3',540,1150,380,'X',C.y,.5);txt('ҚАДАМЫ',540,1300,130,'D',C.y,.9);});
+  const big=(n,h,s,s2,t0)=>{txt(n,540,760,420,'X',C.y,t0);txt(h,540,960,96,'D',C.ink,t0+.25);txt(s,540,1060,36,'R',C.dim,t0+.5,{mis:false,st:.006});if(s2)txt(s2,540,1112,36,'R',C.dim,t0+.6,{mis:false,st:.006});};
+  shot(2.2,5,'left',()=>{big('01','ТІЛ СЕРТИФИКАТЫ','TOPIK 4–6 немесе IELTS 6.5+','неғұрлым ерте — соғұрлым жақсы',2.3);crumb('TOPIK · IELTS',540,1260,3.2,{color:C.ink});});
+  shot(5,7.8,'left',()=>{big('02','GPA-ДЫ ҰСТА','Мектеп не бакалавр балы жоғары болсын,','оқу кезінде де 3.0–4.0+ сақта',5.1);crumb('3.0 → 4.0+',540,1260,6,{color:C.ink});});
+  shot(7.8,10.8,'left',()=>{big('03','ТІЛ ОРТАЛЫҒЫ','Таңдаған универдің тіл орталығында оқы —','негізгі оқуға 30–50% жеңілдік',7.9);
+    txt('−30–50%',540,1310,120,'X',C.bg,8.9,{box:C.y,mis:false});});
+  shot(10.8,12.5,'left',()=>{steps3([{n:'01',h:'TOPIK / IELTS',s:''},{n:'02',h:'GPA',s:''},{n:'03',h:'ТІЛ ОРТАЛЫҒЫ',s:''}],620,10.85,.25,190);
+    txt('= ГРАНТ',540,1330,140,'D',C.y,11.6);});
+  shot(12.5,15.01,'none',()=>cta(12.5,{kicker:'ЖОСПАРЫҢДЫ БІРГЕ ҚҰРАЙЫҚ',sub:'Директке «ЖОСПАР» деп жаз',sub2:'Қай қадамдасың — соны айтамыз'}));
+ },
+ poster(){crumb('САҚТАП ҚОЙ',540,330,0,{color:C.ink});txt('ГРАНТ АЛУДЫҢ',540,500,100,'D',C.ink,0);txt('3 ҚАДАМЫ',540,650,130,'D',C.y,0);
+  T=99;steps3([{n:'01',h:'ТІЛ СЕРТИФИКАТЫ',s:'TOPIK 4–6 немесе IELTS 6.5+',s2:'неғұрлым ерте — соғұрлым жақсы'},{n:'02',h:'GPA-ДЫ ҰСТА',s:'Мектеп / бакалавр балы жоғары,',s2:'оқу кезінде 3.0–4.0+'},{n:'03',h:'ТІЛ ОРТАЛЫҒЫ',s:'Таңдаған универдің тіл курсы →',s2:'негізгі оқуға 30–50% жеңілдік'}],830,0,0,220);
+  button('ТЕГІН КОНСУЛЬТАЦИЯ',1500,0,{size:40,w:860,h:130});txt('Директке «ЖОСПАР» деп жаз',540,1640,36,'B',C.ink,0,{mis:false});}
+};
+
+/* 6. Myth vs fact — audience: бюджетке қарайтын жастар 17–25 */
+CR.myth={dur:15,hangul:'서울',hits:[.5,1.5,2.6,4.3,6.1,7.9,10.3,12.55],cta:12.5,
+ shots(){
+  shot(0,2.5,'left',()=>{txt('КОРЕЯДА ОҚУ —',540,760,96,'D',C.ink,.05);const r=txt('ҚЫМБАТ',540,1000,200,'D',C.ink,.45);txt('?',540,1160,140,'D',C.ink,.9,{mis:false});
+    strike(r.x0-20,r.x0+r.w+20,930,1.5,.25);});
+  shot(2.5,4.1,'up',()=>{const r=txt('МИФ.',540,1000,300,'D',C.y,2.6);const lt=T-2.6;if(lt>0){ctx.fillStyle=C.r;ctx.fillRect(r.x0,1050,r.w*eo(lt/.35),18);}});
+  shot(4.1,10.2,'left',()=>{crumb('ФАКТ · СЕУЛ',540,350,4.1);
+    priceRows([{label:'Гошивон · айына',num:350000,unit:' ₩',tag:'КЕПІЛСІЗ'},
+      {label:'Тіл курсы · 10 апта · Kookmin, SeoulTech',text:'1,4 млн ₩-дан'},
+      {label:'Kookmin тіл курсы · 2 семестр + TOPIK 4 →',text:'−50% ГРАНТ'}],520,4.3,1.8,280);
+    note('Гошивон: коммуналдық, интернет, тегін күріш пен рамен ішінде.',6.3);});
+  shot(10.2,12.5,'left',()=>{txt('АРМАН —',540,860,140,'D',C.ink,10.3);txt('ҚОЛЖЕТІМДІ',540,1040,124,'D',C.y,10.65);});
+  shot(12.5,15.01,'none',()=>cta(12.5,{kicker:'БЮДЖЕТІҢЕ САЙ ЖОСПАР',sub:'Директке «КОРЕЯ» деп жаз',sub2:'Қай универ, қай тұрғын үй — бәрін есептейміз'}));
+ },
+ poster(){txt('КОРЕЯДА ОҚУ —',540,420,90,'D',C.ink,0);T=99;const r=txt('ҚЫМБАТ?',540,600,170,'D',C.ink,0);strike(r.x0-20,r.x0+r.w+20,540,0);
+  txt('МИФ.',540,850,200,'D',C.y,0);
+  [['Гошивон · айына, кепілсіз','350 000 ₩'],['Тіл курсы · 10 апта','1,4 млн ₩-дан'],['Kookmin: 2 семестр + TOPIK 4','−50% ГРАНТ']].forEach((q,i)=>{const y=975+i*135;
+    txt(q[0],100,y,32,'B',C.dim,0,{align:'left',mis:false});txt(q[1],100,y+72,70,'N',i===2?C.y:C.ink,0,{align:'left',mis:false});hline(100,y+100,880,0);});
+  button('ТЕГІН КОНСУЛЬТАЦИЯ',1500,0,{size:40,w:860,h:130});txt('Директке «КОРЕЯ» деп жаз',540,1640,36,'B',C.ink,0,{mis:false});}
+};
+
+/* ================= render API ================= */
+const P=new URLSearchParams(location.search);
+const cr=CR[P.get('c')||'grant100'];
+function seekScene(t,frameIdx=0){T=t;GA=1;BLUR=0;
+  ctx.setTransform(1,0,0,1,0,0);background(cr,frameIdx);header(cr);
+  const s=camera(cr);ctx.save();ctx.translate(540,900);ctx.scale(s,s);ctx.translate(-540,-900);
+  cr.shots();ctx.restore();overlayGrain(frameIdx);}
+function drawPoster(){T=99;GA=1;BLUR=0;ctx.setTransform(1,0,0,1,0,0);background(cr,0);header(cr);cr.poster();overlayGrain(0);
+  octx.drawImage(scene,0,0);}
+/* motion-blurred frame: average `sub` sub-frames across a 180° shutter */
+function frame(f,fps=30,sub=3){octx.globalAlpha=1;for(let k=0;k<sub;k++){seekScene(f/fps+(k/sub)*(.5/fps),f);octx.globalAlpha=1/(k+1);octx.drawImage(scene,0,0);}octx.globalAlpha=1;}
+window.seek=t=>{seekScene(t);octx.drawImage(scene,0,0);};
+window.frame=frame;window.drawPoster=drawPoster;window.CR=CR;window.cr=cr;
+window.grab=(q=.93)=>out.toDataURL('image/jpeg',q);
+const fontsReady=Promise.all([FONT.D(40),FONT.N(40),FONT.X(40),FONT.B(40),FONT.R(40),FONT.L(40),FONT.K(40),'500 40px MS'].map(f=>document.fonts.load(f,'АӘҒҚҢӨҰҮІ장학금₩'))).then(()=>document.fonts.ready);
+window.ready=fontsReady.then(()=>true);
+fontsReady.then(()=>{
+  if(P.get('poster')){drawPoster();return;}
+  if(P.get('t')){window.seek(+P.get('t'));return;}
+  if(P.get('render'))return;
+  const t0=performance.now();const loop=()=>{const t=((performance.now()-t0)/1000)%cr.dur;window.seek(t);requestAnimationFrame(loop);};loop();
+});
+</script>
+</body>
+</html>
