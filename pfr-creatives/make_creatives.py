@@ -219,7 +219,7 @@ class Background:
 
 # ---------------------------------------------------------------- build
 
-def build(cr, voice, fpath, outdir, tmp):
+def build(cr, voice, fpath, outdir, tmp, bg=None, suffix=""):
     scenes = cr["scenes"]
     timeline = []  # (start, end, scene, extra)
     voice_track = []
@@ -276,13 +276,13 @@ def build(cr, voice, fpath, outdir, tmp):
         else:
             e["lay"] = fit(sc["text"], fpath, 96 if len(sc["text"]) < 45 else 86)
 
-    bg = Background(sum(map(ord, cr["id"])))
+    bg = bg or Background(sum(map(ord, cr["id"])))
     label_f = font(fpath, 34, "SemiBold")
     big_f = font(fpath, 150, "Black")
     mid_f = font(fpath, 84, "ExtraBold")
     beats_arr = np.array(beats) if beats else np.array([-10.0])
 
-    out = os.path.join(outdir, f"{cr['id']}.mp4")
+    out = os.path.join(outdir, f"{cr['id']}{suffix}.mp4")
     ff = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
                            "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-i", wav,
                            "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-maxrate", "8M", "-bufsize", "16M", "-pix_fmt", "yuv420p",
