@@ -144,12 +144,13 @@ def build(name, spec):
     pngs = render_overlays(name, spec)
     args = ["ffmpeg","-v","error","-y"]
     fc = []
-    for i,(src,ss,d) in enumerate(spec["clips"]):
+    for i,c in enumerate(spec["clips"]):
+        src,ss,d = c[:3]; pre = (c[3] + ",") if len(c) > 3 and c[3] else ""
         args += ["-ss",str(ss),"-t",str(d),"-i",os.path.join(SRC,src)]
-        fc.append(f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1,format=yuv420p,trim=duration={d},setpts=PTS-STARTPTS[c{i}]")
+        fc.append(f"[{i}:v]{pre}scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,setsar=1,format=yuv420p,trim=duration={d},setpts=PTS-STARTPTS[c{i}]")
     n = len(spec["clips"])
     fc.append("".join(f"[c{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[base]")
-    total = sum(c[2] for c in spec["clips"])
+    total = round(sum(c[2] for c in spec["clips"]), 3)
     last = "base"
     for j,p in enumerate(pngs):
         idx = n + j
@@ -161,8 +162,9 @@ def build(name, spec):
     args += ["-i", os.path.join(ROOT,"pad.wav")]
     if spec.get("vo"):
         vo_in = []
-        for i,(a,b) in enumerate(VO_T):
-            args += ["-i", os.path.join(ROOT, VO_FILES[i] + ".mp3")]
+        vol = spec.get("vo_list") or [(VO_FILES[i], a) for i,(a,_) in enumerate(VO_T)]
+        for i,(vf,a) in enumerate(vol):
+            args += ["-i", os.path.join(ROOT, vf + ".mp3")]
             ms = int(a*1000)
             fc.append(f"[{k+1+i}:a]aresample=44100,adelay={ms}|{ms},apad=whole_dur={total}[v{i}]")
             vo_in.append(f"[v{i}]")
