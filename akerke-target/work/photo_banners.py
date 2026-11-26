@@ -1,6 +1,6 @@
 import json, os, subprocess, base64
 R=os.path.dirname(os.path.abspath(__file__)); OUT=os.path.join(R,"..","banners")
-ADDR="📍 Aura SPA · Желтоқсан 79, Қызылорда"
+ADDR="📍 Қызылорда қ."
 def b(name, bg, tag, head, body, cta, price=None, ctac="#b8395f", hs=104):
     pr=f'<div class="price">{price}</div>' if price else ''
     return {"path":os.path.join(OUT,name+".png"),"html":f'''<div class="bg" style="background-image:url(data:image/jpeg;base64,{base64.b64encode(open(f'{R}/frames/{bg}.jpg','rb').read()).decode()})"></div>
